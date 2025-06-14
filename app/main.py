@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -15,16 +15,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
-app = FastAPI(
-    title="Instantly.ai Webhook Handler",
-    description="Webhook handler for Instantly.ai email automation",
-    version="1.0.0"
-)
+app = FastAPI()
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,7 +32,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 class WebhookData(BaseModel):
     email_body: str
     sender_email: str
-    domain: str = "general"
+    domain: Optional[str] = "general"
 
 @app.post("/webhook")
 async def webhook_handler(data: WebhookData) -> Dict[str, Any]:
