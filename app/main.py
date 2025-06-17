@@ -60,19 +60,37 @@ class WebhookData(BaseModel):
     domain: Optional[str] = "general"
 
 @app.post("/webhook")
-async def webhook_handler(data: WebhookData) -> Dict[str, Any]:
+async def webhook_handler(request: Request) -> Dict[str, Any]:
     """
-    Handle incoming webhook requests from Instantly.ai
+    Handle incoming webhook requests from Instantly.ai with error-tolerant parsing.
     """
     try:
-        logger.info(f"Received webhook data: {data}")
+        raw_body = await request.body()
+        try:
+            # Attempt standard JSON parsing first
+            data = await request.json()
+        except Exception:
+            # Fallback: sanitize manually
+            import json
+            sanitized = raw_body.decode("utf-8") \
+                .replace('\r', '') \
+                .replace('\n', '\\n') \
+                .replace('\"', '\\"') \
+                .replace("'", "\\'")
+            data = json.loads(sanitized)
+
+        email_body = data.get("email_body", "")
+        sender_email = data.get("sender_email", "")
+        domain = data.get("domain", "general")
+
+        logger.info(f"Received sanitized webhook from {sender_email}")
 
         # Generate GPT response
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "You are a helpful SDR replying to leads via email."},
-                {"role": "user", "content": data.email_body}
+                {"role": "user", "content": email_body}
             ]
         )
 
@@ -80,24 +98,21 @@ async def webhook_handler(data: WebhookData) -> Dict[str, Any]:
 
         # Send reply email
         email_sent = send_email(
-            to_email=data.sender_email,
+            to_email=sender_email,
             subject="RE: Your recent inquiry",
             body=reply_text
         )
 
-        # Log the response
-        logger.info(f"Generated reply for {data.sender_email}")
-
         return {
             "status": "success",
             "reply": reply_text,
-            "sender": data.sender_email,
+            "sender": sender_email,
             "email_sent": email_sent
         }
 
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Webhook error: {str(e)}")
 
 @app.get("/health")
 async def health_check():
