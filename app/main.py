@@ -1,13 +1,10 @@
-from fastapi import FastAPI, Request, HTTPException, Body
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
-from pydantic import BaseModel
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
 
 # Load environment variables
 load_dotenv()
@@ -17,12 +14,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
-app = FastAPI()
+app = FastAPI(
+    title="Instantly.ai Webhook Handler",
+    description="Webhook handler for Instantly.ai email automation",
+    version="1.0.0"
+)
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # In production, replace with specific origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -31,52 +32,22 @@ app.add_middleware(
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Initialize SendGrid
-SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
-REPLY_FROM_EMAIL = os.getenv("REPLY_FROM_EMAIL")
-
-def send_email(to_email: str, subject: str, body: str):
-    """
-    Send an email using SendGrid
-    """
-    message = Mail(
-        from_email=REPLY_FROM_EMAIL,
-        to_emails=to_email,
-        subject=subject,
-        html_content=body.replace('\n', '<br>')
-    )
-    try:
-        sg = SendGridAPIClient(SENDGRID_API_KEY)
-        response = sg.send(message)
-        logger.info(f"Email sent to {to_email}. Status code: {response.status_code}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send email to {to_email}: {str(e)}")
-        return False
-
-class WebhookData(BaseModel):
-    email_body: str
-    sender_email: str
-    domain: Optional[str] = "general"
-
 @app.post("/webhook")
 async def webhook_handler(request: Request) -> Dict[str, Any]:
     """
     Handle incoming webhook requests from Instantly.ai
     """
     try:
-        raw_data = await request.body()
-        try:
-            json_data = await request.json()
-        except Exception:
-            import json
-            json_data = json.loads(raw_data.decode("utf-8").replace('\n', '\\n').replace('\r', '').replace('"', '\\"'))
+        # Parse the incoming webhook data
+        data = await request.json()
+        logger.info(f"Received webhook data: {data}")
 
-        email_body = json_data.get("email_body", "").replace('\r', '')
-        sender_email = json_data.get("sender_email", "")
-        domain = json_data.get("domain", "general")
+        # Extract email data
+        email_body = data.get("email_body")
+        sender = data.get("sender_email")
 
-        logger.info(f"Sanitized webhook data from {sender_email}")
+        if not email_body or not sender:
+            raise HTTPException(status_code=400, detail="Missing required fields")
 
         # Generate GPT response
         response = client.chat.completions.create(
@@ -89,24 +60,18 @@ async def webhook_handler(request: Request) -> Dict[str, Any]:
 
         reply_text = response.choices[0].message.content
 
-        # Send reply email
-        email_sent = send_email(
-            to_email=sender_email,
-            subject="RE: Your recent inquiry",
-            body=reply_text
-        )
+        # Log the response
+        logger.info(f"Generated reply for {sender}")
 
         return {
             "status": "success",
             "reply": reply_text,
-            "sender": sender_email,
-            "email_sent": email_sent
+            "sender": sender
         }
 
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/health")
 async def health_check():
