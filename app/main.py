@@ -1,13 +1,14 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import logging
-from typing import Dict, Any, Optional
+from typing import Optional
 import os
 from dotenv import load_dotenv
-from openai import OpenAI
+import openai
 from pydantic import BaseModel
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
+import json
 
 # Load environment variables
 load_dotenv()
@@ -28,24 +29,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Initialize OpenAI API key
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# Initialize SendGrid
+# SendGrid config
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 REPLY_FROM_EMAIL = os.getenv("REPLY_FROM_EMAIL")
 
+
 def send_email(to_email: str, subject: str, body: str):
-    """
-    Send an email using SendGrid
-    """
-    message = Mail(
-        from_email=REPLY_FROM_EMAIL,
-        to_emails=to_email,
-        subject=subject,
-        html_content=body.replace('\n', '<br>')
-    )
     try:
+        message = Mail(
+            from_email=REPLY_FROM_EMAIL,
+            to_emails=to_email,
+            subject=subject,
+            html_content=body.replace('\n', '<br>')
+        )
         sg = SendGridAPIClient(SENDGRID_API_KEY)
         response = sg.send(message)
         logger.info(f"Email sent to {to_email}. Status code: {response.status_code}")
@@ -54,42 +53,37 @@ def send_email(to_email: str, subject: str, body: str):
         logger.error(f"Failed to send email to {to_email}: {str(e)}")
         return False
 
+
 class WebhookData(BaseModel):
     email_body: str
     sender_email: str
     domain: Optional[str] = "general"
 
+
 @app.post("/webhook")
 async def webhook_handler(request: Request):
-    raw = await request.body()
-    print("RAW BODY:", raw)
-
     """
-    Handle incoming webhook requests from Instantly.ai with error-tolerant parsing.
+    Handle incoming webhook requests from Instantly.ai with fallback JSON handling.
     """
     try:
         raw_body = await request.body()
         try:
-            # Attempt standard JSON parsing first
             data = await request.json()
         except Exception:
-            # Fallback: sanitize manually
-            import json
-            sanitized = raw_body.decode("utf-8") \
-                .replace('\r', '') \
-                .replace('\n', '\\n') \
-                .replace('\"', '\\"') \
-                .replace("'", "\\'")
-            data = json.loads(sanitized)
+            logger.warning("Standard JSON parse failed, attempting fallback...")
+            try:
+                data = json.loads(raw_body.decode("utf-8"))
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Malformed JSON: {str(e)}")
 
         email_body = data.get("email_body", "")
         sender_email = data.get("sender_email", "")
         domain = data.get("domain", "general")
 
-        logger.info(f"Received sanitized webhook from {sender_email}")
+        logger.info(f"Received webhook from {sender_email} in domain: {domain}")
 
         # Generate GPT response
-        response = client.chat.completions.create(
+        response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "You are a helpful SDR replying to leads via email."},
@@ -97,7 +91,7 @@ async def webhook_handler(request: Request):
             ]
         )
 
-        reply_text = response.choices[0].message.content
+        reply_text = response['choices'][0]['message']['content']
 
         # Send reply email
         email_sent = send_email(
@@ -117,13 +111,12 @@ async def webhook_handler(request: Request):
         logger.error(f"Error processing webhook: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Webhook error: {str(e)}")
 
+
 @app.get("/health")
 async def health_check():
-    """
-    Health check endpoint
-    """
     return {"status": "healthy"}
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run(app, host="0.0.0.0", port=8000)
