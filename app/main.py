@@ -6,6 +6,8 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 
 # Load environment variables
 load_dotenv()
@@ -28,6 +30,29 @@ app.add_middleware(
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Initialize SendGrid
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+REPLY_FROM_EMAIL = os.getenv("REPLY_FROM_EMAIL")
+
+def send_email(to_email: str, subject: str, body: str):
+    """
+    Send an email using SendGrid
+    """
+    message = Mail(
+        from_email=REPLY_FROM_EMAIL,
+        to_emails=to_email,
+        subject=subject,
+        html_content=body.replace('\n', '<br>')
+    )
+    try:
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        response = sg.send(message)
+        logger.info(f"Email sent to {to_email}. Status code: {response.status_code}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send email to {to_email}: {str(e)}")
+        return False
 
 class WebhookData(BaseModel):
     email_body: str
@@ -53,13 +78,21 @@ async def webhook_handler(data: WebhookData) -> Dict[str, Any]:
 
         reply_text = response.choices[0].message.content
 
+        # Send reply email
+        email_sent = send_email(
+            to_email=data.sender_email,
+            subject="RE: Your recent inquiry",
+            body=reply_text
+        )
+
         # Log the response
         logger.info(f"Generated reply for {data.sender_email}")
 
         return {
             "status": "success",
             "reply": reply_text,
-            "sender": data.sender_email
+            "sender": data.sender_email,
+            "email_sent": email_sent
         }
 
     except Exception as e:
