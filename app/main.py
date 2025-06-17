@@ -60,7 +60,10 @@ class WebhookData(BaseModel):
     domain: Optional[str] = "general"
 
 @app.post("/webhook")
-async def webhook_handler(request: Request) -> Dict[str, Any]:
+async def webhook_handler(request: Request):
+    raw = await request.body()
+    print("RAW BODY:", raw)
+
     """
     Handle incoming webhook requests from Instantly.ai with error-tolerant parsing.
     """
