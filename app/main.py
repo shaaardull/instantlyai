@@ -8,7 +8,7 @@ from openai import OpenAI
 from pydantic import BaseModel
 import json
 
-# Load environment variables
+# Load environment variables from .env
 load_dotenv()
 
 # Configure logging
@@ -30,6 +30,7 @@ app.add_middleware(
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# Pydantic model for JSON validation
 class WebhookData(BaseModel):
     email_body: str
     sender_email: str
@@ -54,18 +55,10 @@ async def webhook_handler(
     """
     Handle incoming webhook requests from Instantly.ai.
     Accepts both JSON and form data.
-    
-    Example JSON payload:
-    ```json
-    {
-        "email_body": "Hello, I'm interested in your AI solution",
-        "sender_email": "user@example.com",
-        "domain": "general"
-    }
-    ```
     """
+
     try:
-        # Try to get data from form first
+        # Priority 1: Form data
         if email_body and sender_email:
             data = {
                 "email_body": email_body,
@@ -73,13 +66,14 @@ async def webhook_handler(
                 "domain": domain
             }
         else:
-            # Try to get data from JSON body
+            # Priority 2: JSON body
             try:
                 data = await request.json()
             except Exception:
-                # Try raw body as fallback
+                # Fallback: raw body parsing
                 try:
                     raw_body = await request.body()
+                    logger.info(f"Raw request body: {raw_body.decode('utf-8')}")
                     data = json.loads(raw_body.decode("utf-8"))
                 except Exception as e:
                     raise HTTPException(
@@ -87,20 +81,21 @@ async def webhook_handler(
                         detail="Invalid request format. Please provide either form data or JSON with email_body and sender_email"
                     )
 
-        # Validate required fields
+        # Validate presence of required fields
         if not data.get("email_body") or not data.get("sender_email"):
             raise HTTPException(
                 status_code=400,
                 detail="Missing required fields: email_body and sender_email"
             )
 
-        email_body = data.get("email_body", "")
-        sender_email = data.get("sender_email", "")
+        # Extract data
+        email_body = data["email_body"]
+        sender_email = data["sender_email"]
         domain = data.get("domain", "general")
 
         logger.info(f"Received webhook from {sender_email} in domain: {domain}")
 
-        # Generate GPT response using new OpenAI API format
+        # GPT-based response generation
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
@@ -125,6 +120,7 @@ async def webhook_handler(
 async def health_check():
     return {"status": "healthy"}
 
+# Optional for local dev testing
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
