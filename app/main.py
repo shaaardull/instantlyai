@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel
 from bs4 import BeautifulSoup  # HTML to text
+from .prompts import EMAIL_RESPONSE_PROMPT  # Import the prompt
 
 # Load environment variables
 load_dotenv()
@@ -101,21 +102,13 @@ async def webhook_handler(
 
         logger.info(f"Received webhook from {sender_email} in domain: {domain}")
 
-        # GPT response with structured prompt
+        # GPT response with structured prompt from prompts.py
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
                 {
                     "role": "system", 
-                    "content": """You are a helpful SDR replying to leads via email. 
-                    Provide your response in the following JSON format:
-                    {
-                        "subject": "Email subject line",
-                        "body": "Email body content in HTML format"
-                    }
-                    Make sure the response is valid JSON with both subject and body fields.
-                    Note : Do not include the json output inside the ```json``` tags.
-                    """
+                    "content": EMAIL_RESPONSE_PROMPT
                 },
                 {"role": "user", "content": email_body_clean}
             ]
