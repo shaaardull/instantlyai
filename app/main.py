@@ -113,7 +113,9 @@ async def webhook_handler(
                         "subject": "Email subject line",
                         "body": "Email body content in HTML format"
                     }
-                    Make sure the response is valid JSON with both subject and body fields."""
+                    Make sure the response is valid JSON with both subject and body fields.
+                    Note : Do not include the json output inside the ```json``` tags.
+                    """
                 },
                 {"role": "user", "content": email_body_clean}
             ]
