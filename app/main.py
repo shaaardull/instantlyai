@@ -3,12 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 import logging
 from typing import Optional
 import os
+import json
 from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel
-import json
+from bs4 import BeautifulSoup  # HTML to text
 
-# Load environment variables from .env
+# Load environment variables
 load_dotenv()
 
 # Configure logging
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI()
 
-# Add CORS middleware
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,10 +28,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize OpenAI client
+# OpenAI Client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Pydantic model for JSON validation
 class WebhookData(BaseModel):
     email_body: str
     sender_email: str
@@ -52,13 +52,10 @@ async def webhook_handler(
     sender_email: Optional[str] = Form(None),
     domain: Optional[str] = Form("general")
 ):
-    """
-    Handle incoming webhook requests from Instantly.ai.
-    Accepts both JSON and form data.
-    """
-
     try:
-        # Priority 1: Form data
+        data = {}
+
+        # Try form data first
         if email_body and sender_email:
             data = {
                 "email_body": email_body,
@@ -66,41 +63,52 @@ async def webhook_handler(
                 "domain": domain
             }
         else:
-            # Priority 2: JSON body
+            # Read raw body and try JSON
+            raw_body = await request.body()
+            raw_text = raw_body.decode("utf-8")
+            logger.info(f"Raw request body: {raw_text}")
             try:
-                data = await request.json()
-            except Exception:
-                # Fallback: raw body parsing
+                data = json.loads(raw_text)
+            except json.JSONDecodeError:
+                # Attempt to manually extract from malformed HTML-style JSON
                 try:
-                    raw_body = await request.body()
-                    logger.info(f"Raw request body: {raw_body.decode('utf-8')}")
-                    data = json.loads(raw_body.decode("utf-8"))
-                except Exception as e:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Invalid request format. Please provide either form data or JSON with email_body and sender_email"
-                    )
+                    # Very basic fallback parsing
+                    email_body_start = raw_text.find('"email_body":') + len('"email_body":')
+                    sender_email_start = raw_text.find('"sender_email":') + len('"sender_email":')
 
-        # Validate presence of required fields
+                    email_body = raw_text[email_body_start:raw_text.find('",', email_body_start)].strip(' ":')
+                    sender_email = raw_text[sender_email_start:raw_text.find('",', sender_email_start)].strip(' ":')
+                    domain = "general"
+
+                    data = {
+                        "email_body": email_body,
+                        "sender_email": sender_email,
+                        "domain": domain
+                    }
+                except Exception as parse_err:
+                    logger.warning(f"Failed to parse fallback: {parse_err}")
+                    raise HTTPException(status_code=400, detail="Invalid request format. Could not parse data.")
+
+        # Final validation
         if not data.get("email_body") or not data.get("sender_email"):
             raise HTTPException(
                 status_code=400,
                 detail="Missing required fields: email_body and sender_email"
             )
 
-        # Extract data
-        email_body = data["email_body"]
+        # Sanitize HTML if needed
+        email_body_clean = BeautifulSoup(data["email_body"], "html.parser").get_text()
         sender_email = data["sender_email"]
         domain = data.get("domain", "general")
 
         logger.info(f"Received webhook from {sender_email} in domain: {domain}")
 
-        # GPT-based response generation
+        # GPT response
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "You are a helpful SDR replying to leads via email."},
-                {"role": "user", "content": email_body}
+                {"role": "user", "content": email_body_clean}
             ]
         )
 
@@ -119,8 +127,3 @@ async def webhook_handler(
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
-
-# Optional for local dev testing
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
