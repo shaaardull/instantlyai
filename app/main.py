@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 import logging
 from typing import Optional
 import os
@@ -46,7 +46,7 @@ class WebhookData(BaseModel):
             }
         }
 
-@app.post("/webhook", response_class=HTMLResponse)
+@app.post("/webhook")
 async def webhook_handler(
     request: Request,
     email_body: Optional[str] = Form(None),
@@ -101,28 +101,51 @@ async def webhook_handler(
 
         logger.info(f"Received webhook from {sender_email} in domain: {domain}")
 
-        # GPT response
+        # GPT response with structured prompt
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are a helpful SDR replying to leads via email. provide an email reply in the HTML format to keep in a structured format"},
+                {
+                    "role": "system", 
+                    "content": """You are a helpful SDR replying to leads via email. 
+                    Provide your response in the following JSON format:
+                    {
+                        "subject": "Email subject line",
+                        "body": "Email body content in HTML format"
+                    }
+                    Make sure the response is valid JSON with both subject and body fields."""
+                },
                 {"role": "user", "content": email_body_clean}
             ]
         )
 
         reply_text = response.choices[0].message.content
 
-        # Wrap in HTML
-        html_response = f"""
-        <html>
-            <head><title>AI Reply</title></head>
-            <body>
-                <p>{reply_text}</p>
-            </body>
-        </html>
-        """
+        try:
+            # Parse the JSON response from GPT
+            reply_json = json.loads(reply_text)
+            
+            # Return structured response
+            return {
+                "status": "success",
+                "sender": sender_email,
+                "reply": {
+                    "subject": reply_json.get("subject", ""),
+                    "body": reply_json.get("body", "")
+                }
+            }
 
-        return HTMLResponse(content=html_response)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse GPT response as JSON: {str(e)}")
+            # Fallback to returning the raw response if JSON parsing fails
+            return {
+                "status": "success",
+                "sender": sender_email,
+                "reply": {
+                    "subject": "Re: Your inquiry",
+                    "body": reply_text
+                }
+            }
 
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
