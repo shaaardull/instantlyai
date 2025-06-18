@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 from typing import Optional
@@ -35,21 +35,64 @@ class WebhookData(BaseModel):
     sender_email: str
     domain: Optional[str] = "general"
 
-@app.post("/webhook")
-async def webhook_handler(request: Request):
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "email_body": "Hello, I'm interested in your AI solution",
+                "sender_email": "user@example.com",
+                "domain": "general"
+            }
+        }
+
+@app.post("/webhook", response_model=dict)
+async def webhook_handler(
+    request: Request,
+    email_body: Optional[str] = Form(None),
+    sender_email: Optional[str] = Form(None),
+    domain: Optional[str] = Form("general")
+):
     """
-    Handle incoming webhook requests from Instantly.ai with fallback JSON handling.
+    Handle incoming webhook requests from Instantly.ai.
+    Accepts both JSON and form data.
+    
+    Example JSON payload:
+    ```json
+    {
+        "email_body": "Hello, I'm interested in your AI solution",
+        "sender_email": "user@example.com",
+        "domain": "general"
+    }
+    ```
     """
     try:
-        raw_body = await request.body()
-        try:
-            data = await request.json()
-        except Exception:
-            logger.warning("Standard JSON parse failed, attempting fallback...")
+        # Try to get data from form first
+        if email_body and sender_email:
+            data = {
+                "email_body": email_body,
+                "sender_email": sender_email,
+                "domain": domain
+            }
+        else:
+            # Try to get data from JSON body
             try:
-                data = json.loads(raw_body.decode("utf-8"))
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Malformed JSON: {str(e)}")
+                data = await request.json()
+            except Exception:
+                # Try raw body as fallback
+                try:
+                    raw_body = await request.body()
+                    data = json.loads(raw_body.decode("utf-8"))
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invalid request format. Please provide either form data or JSON with email_body and sender_email"
+                    )
+
+        # Validate required fields
+        if not data.get("email_body") or not data.get("sender_email"):
+            raise HTTPException(
+                status_code=400,
+                detail="Missing required fields: email_body and sender_email"
+            )
 
         email_body = data.get("email_body", "")
         sender_email = data.get("sender_email", "")
