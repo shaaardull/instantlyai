@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 import os
 from dotenv import load_dotenv
-import openai
+from openai import OpenAI
 from pydantic import BaseModel
 import json
 
@@ -27,8 +27,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize OpenAI API key
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 class WebhookData(BaseModel):
     email_body: str
@@ -100,8 +100,8 @@ async def webhook_handler(
 
         logger.info(f"Received webhook from {sender_email} in domain: {domain}")
 
-        # Generate GPT response
-        response = openai.ChatCompletion.create(
+        # Generate GPT response using new OpenAI API format
+        response = client.chat.completions.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "You are a helpful SDR replying to leads via email."},
@@ -109,7 +109,7 @@ async def webhook_handler(
             ]
         )
 
-        reply_text = response['choices'][0]['message']['content']
+        reply_text = response.choices[0].message.content
 
         return {
             "status": "success",
