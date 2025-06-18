@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 import logging
 from typing import Optional
 import os
@@ -45,7 +46,7 @@ class WebhookData(BaseModel):
             }
         }
 
-@app.post("/webhook", response_model=dict)
+@app.post("/webhook", response_class=HTMLResponse)
 async def webhook_handler(
     request: Request,
     email_body: Optional[str] = Form(None),
@@ -70,9 +71,7 @@ async def webhook_handler(
             try:
                 data = json.loads(raw_text)
             except json.JSONDecodeError:
-                # Attempt to manually extract from malformed HTML-style JSON
                 try:
-                    # Very basic fallback parsing
                     email_body_start = raw_text.find('"email_body":') + len('"email_body":')
                     sender_email_start = raw_text.find('"sender_email":') + len('"sender_email":')
 
@@ -89,14 +88,13 @@ async def webhook_handler(
                     logger.warning(f"Failed to parse fallback: {parse_err}")
                     raise HTTPException(status_code=400, detail="Invalid request format. Could not parse data.")
 
-        # Final validation
         if not data.get("email_body") or not data.get("sender_email"):
             raise HTTPException(
                 status_code=400,
                 detail="Missing required fields: email_body and sender_email"
             )
 
-        # Sanitize HTML if needed
+        # Sanitize HTML
         email_body_clean = BeautifulSoup(data["email_body"], "html.parser").get_text()
         sender_email = data["sender_email"]
         domain = data.get("domain", "general")
@@ -107,18 +105,24 @@ async def webhook_handler(
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are a helpful SDR replying to leads via email."},
+                {"role": "system", "content": "You are a helpful SDR replying to leads via email. provide an email reply in the HTML format to keep in a structured format"},
                 {"role": "user", "content": email_body_clean}
             ]
         )
 
         reply_text = response.choices[0].message.content
 
-        return {
-            "status": "success",
-            "reply": reply_text,
-            "sender": sender_email
-        }
+        # Wrap in HTML
+        html_response = f"""
+        <html>
+            <head><title>AI Reply</title></head>
+            <body>
+                <p>{reply_text}</p>
+            </body>
+        </html>
+        """
+
+        return HTMLResponse(content=html_response)
 
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
